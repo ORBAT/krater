@@ -39,7 +39,7 @@ func NewUnsafeWriter(topic string, kp Producer) *UnsafeWriter {
 
 	uw := &UnsafeWriter{kp: kp, id: id, topic: topic, log: log, stopCh: stopCh}
 
-	go func() {
+	evtLoop := func() {
 		log.Println("Starting error listener")
 		for {
 			select {
@@ -59,7 +59,9 @@ func NewUnsafeWriter(topic string, kp Producer) *UnsafeWriter {
 				}
 			}
 		}
-	}()
+	}
+
+	go withRecover(evtLoop)
 
 	return uw
 }
