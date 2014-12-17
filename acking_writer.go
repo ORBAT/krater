@@ -31,7 +31,7 @@ type AckingWriter struct {
 	closed      int32         // nonzero if the writer has started closing. Must be accessed atomically
 	log         StdLogger
 	closeMut    sync.Mutex                           // mutex for Close
-	errChForMsg map[*sarama.MessageToSend]chan error // return channel for "work message" responses
+	errChForMsg map[*sarama.MessageToSend]chan error // return channels for "work message" responses
 	pendingWg   sync.WaitGroup                       // WaitGroup for pending message responses
 	workCh      chan work                            // channel for sending writes to event loop
 }
