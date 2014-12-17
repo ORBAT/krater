@@ -36,7 +36,7 @@ type AckingWriter struct {
 	workCh      chan work                            // channel for sending writes to event loop
 }
 
-var awIdGen = SequentialIntGen()
+var awIdGen = sequentialIntGen()
 
 // NewAckingWriter returns an AckingWriter that uses kp to produce messages to Kafka topic 'topic', with a maximum of maxConcurrent concurrent writes.
 //

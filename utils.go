@@ -9,7 +9,7 @@ import (
 	"github.com/Shopify/sarama"
 )
 
-func SequentialIntGen() func() int {
+func sequentialIntGen() func() int {
 	i := 0
 	return func() int {
 		i++

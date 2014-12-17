@@ -30,7 +30,7 @@ type UnsafeWriter struct {
 	closeMut  sync.Mutex     // mutex for Close and CloseAll
 }
 
-var unswIdGen = SequentialIntGen()
+var unswIdGen = sequentialIntGen()
 
 func NewUnsafeWriter(topic string, kp Producer) *UnsafeWriter {
 	id := "aw-" + strconv.Itoa(unswIdGen())
