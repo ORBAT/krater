@@ -23,7 +23,7 @@
 // UnsafeWriter
 //
 // UnsafeWriter's Write and ReadFrom methods write messages to Kafka without waiting for responses from the broker.
-// Errors are also ignored (they are logged, though.)
+// Both methods will block only if the Producer's Input() channel is full. Errors are ignored (they are logged, though.)
 //
 //  client, _ := sarama.NewClient("example", []string{"localhost:6667"}, nil)
 //  cfg := sarama.NewProducerConfig()
