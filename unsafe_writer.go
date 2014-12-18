@@ -34,7 +34,7 @@ var unswIdGen = sequentialIntGen()
 
 func NewUnsafeWriter(topic string, kp Producer) *UnsafeWriter {
 	id := "aw-" + strconv.Itoa(unswIdGen())
-	log := NewLogger(fmt.Sprintf("UnsafeWr %s -> %s", id, topic), nil)
+	log := newLogger(fmt.Sprintf("UnsafeWr %s -> %s", id, topic), nil)
 	stopCh := make(chan struct{})
 
 	uw := &UnsafeWriter{kp: kp, id: id, topic: topic, log: log, stopCh: stopCh}

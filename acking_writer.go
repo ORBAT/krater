@@ -43,7 +43,7 @@ var awIdGen = sequentialIntGen()
 // kp MUST have been initialized with AckSuccesses = true or Write will block indefinitely.
 func NewAckingWriter(topic string, kp Producer, maxConcurrent int) *AckingWriter {
 	id := "aw-" + strconv.Itoa(awIdGen())
-	logger := NewLogger(fmt.Sprintf("AckWr %s -> %s", id, topic), nil)
+	logger := newLogger(fmt.Sprintf("AckWr %s -> %s", id, topic), nil)
 	aw := &AckingWriter{
 		kp:          kp,
 		id:          id,

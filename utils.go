@@ -17,11 +17,11 @@ func sequentialIntGen() func() int {
 	}
 }
 
-// LogOutput is the default writer for loggers created with NewLogger(). Defaults to ioutil.Discard.
+// LogOutput is the writer used by krater's loggers
 var LogOutput io.Writer = ioutil.Discard
 
-// NewLogger creates a new log.Logger using either "out" or, if it's nil, LogOutput for writing.
-func NewLogger(prefix string, out io.Writer) StdLogger {
+// newLogger creates a new log.Logger using either "out" or, if it's nil, LogOutput for writing.
+func newLogger(prefix string, out io.Writer) StdLogger {
 	if out == nil {
 		out = LogOutput
 	}
@@ -38,7 +38,7 @@ func LogTo(w io.Writer) func() {
 	oldLogger := sarama.Logger
 	oldOutput := LogOutput
 	LogOutput = w
-	sarama.Logger = NewLogger("Sarama", LogOutput)
+	sarama.Logger = newLogger("Sarama", LogOutput)
 	return func() {
 		LogOutput = oldOutput
 		sarama.Logger = oldLogger
