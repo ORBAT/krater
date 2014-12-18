@@ -35,7 +35,7 @@
 //  prod, _ := sarama.NewProducer(client, cfg)
 //
 //  uw := NewUnsafeWriter("example-unsafe", prod)
-//  log.New(out, "[AHOY] ", log.LstdFlags)
+//  log.New(uw, "[AHOY] ", log.LstdFlags)
 //  log.Println("Well this is handy")
 package krater
 
