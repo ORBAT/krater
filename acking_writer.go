@@ -9,97 +9,77 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/Shopify/sarama"
+	"gopkg.in/Shopify/sarama.v1"
 )
 
-type work struct {
-	resultCh chan error // channel to return result of write on
-	*sarama.MessageToSend
-}
-
 // AckingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer, and
-// each Write() call will block until a response is received.
+// each Write() call will block until a response is received from the broker.
 //
-// The sarama.Producer passed to AckingWriter must have AckSuccesses = true.
+// The AsyncProducer passed to NewAckingWriter must have Config.Return.Successes == true and Config.Return.Errors == true
 //
 // Close() must be called when the writer is no longer needed.
 type AckingWriter struct {
-	kp          Producer
-	id          string
-	topic       string
-	stopCh      chan struct{} // used to signal event loop close
-	closed      int32         // nonzero if the writer has started closing. Must be accessed atomically
-	log         StdLogger
-	closeMut    sync.Mutex                           // mutex for Close
-	errChForMsg map[*sarama.MessageToSend]chan error // return channels for "work message" responses
-	pendingWg   sync.WaitGroup                       // WaitGroup for pending message responses
-	workCh      chan work                            // channel for sending writes to event loop
+	kp        sarama.AsyncProducer
+	id        string
+	topic     string
+	stopCh    chan empty // used to signal event loop close
+	closed    int32      // nonzero if the writer has started closing. Must be accessed atomically
+	log       StdLogger
+	pendingWg sync.WaitGroup // WaitGroup for pending message responses
+	sema      chan empty     // used as a counting semaphore
+	closeCh   chan empty
+	closeMut  sync.Mutex
 }
 
 var awIdGen = sequentialIntGen()
 
+type empty struct{}
+
 // NewAckingWriter returns an AckingWriter that uses kp to produce messages to Kafka topic 'topic', with a maximum of maxConcurrent concurrent writes.
 //
 // kp MUST have been initialized with AckSuccesses = true or Write will block indefinitely.
-func NewAckingWriter(topic string, kp Producer, maxConcurrent int) *AckingWriter {
+func NewAckingWriter(topic string, kp sarama.AsyncProducer, maxConcurrent int) *AckingWriter {
 	id := "aw-" + strconv.Itoa(awIdGen())
 	logger := newLogger(fmt.Sprintf("AckWr %s -> %s", id, topic), nil)
+
+	logger.Printf("Created")
+
 	aw := &AckingWriter{
-		kp:          kp,
-		id:          id,
-		topic:       topic,
-		log:         logger,
-		stopCh:      make(chan struct{}),
-		errChForMsg: make(map[*sarama.MessageToSend]chan error),
-		workCh:      make(chan work, maxConcurrent)}
+		kp:      kp,
+		id:      id,
+		topic:   topic,
+		log:     logger,
+		stopCh:  make(chan empty),
+		sema:    make(chan empty, maxConcurrent),
+		closeCh: make(chan empty)}
 
-	evtLoop := func() {
-		errCh := aw.kp.Errors()
-		succCh := aw.kp.Successes()
-
-		aw.log.Println("Starting event loop")
-		for {
-			select {
-			case <-aw.stopCh:
-				aw.log.Println("Stopping event loop")
-				return
-			case work := <-aw.workCh:
-				aw.errChForMsg[work.MessageToSend] = work.resultCh
-				// this is done in a new goroutine to prevent blocking the event loop in case Input() is full.
-				// This could probably be improved somehow.
-				go func() {
-					aw.kp.Input() <- work.MessageToSend
-				}()
-			case perr, ok := <-errCh:
-				if !ok {
-					aw.log.Println("Errors() channel closed?!")
-					close(aw.stopCh)
-					continue
-				}
-				aw.sendProdResponse(perr.Msg, perr.Err)
-			case succ, ok := <-succCh:
-				if !ok {
-					aw.log.Println("Successes() channel closed?!")
-					close(aw.stopCh)
-					continue
-				}
-				aw.sendProdResponse(succ, nil)
-			}
-		}
-	}
-
-	go withRecover(evtLoop)
+	go withRecover(aw.handleErrors)
+	go withRecover(aw.handleSuccesses)
 
 	return aw
 }
 
-func (aw *AckingWriter) sendProdResponse(msg *sarama.MessageToSend, perr error) {
-	receiver, ok := aw.errChForMsg[msg]
-	if !ok {
-		aw.log.Panicf("Nobody wanted *MessageToSend %p (%#v)?", msg, msg)
-	} else {
-		receiver <- perr
-		delete(aw.errChForMsg, msg)
+func (aw *AckingWriter) handleSuccesses() {
+	for {
+		select {
+		case <-aw.closeCh:
+			aw.log.Println("Stopping handleSuccesses")
+			return
+		case msg := <-aw.kp.Successes():
+			close(msg.Metadata.(chan error))
+		}
+	}
+}
+
+func (aw *AckingWriter) handleErrors() {
+	for {
+		select {
+		case <-aw.closeCh:
+			aw.log.Println("Stopping handleErrors")
+			return
+		case msg := <-aw.kp.Errors():
+			msg.Msg.Metadata.(chan error) <- msg.Err
+		}
 	}
 }
 
@@ -114,23 +94,21 @@ func (aw *AckingWriter) Write(p []byte) (n int, err error) {
 		return 0, syscall.EINVAL
 	}
 
-	n = len(p)
+	// acquire write semaphore or wait until we get it
+	aw.sema <- empty{}
+	defer func() { <-aw.sema }()
+
+	msg := &sarama.ProducerMessage{Topic: aw.topic, Key: nil, Value: sarama.ByteEncoder(p)}
 	resCh := make(chan error, 1)
-	wrk := work{MessageToSend: &sarama.MessageToSend{Topic: aw.topic, Key: nil, Value: sarama.ByteEncoder(p)}, resultCh: resCh}
+	msg.Metadata = resCh
 
-	aw.pendingWg.Add(1)
-	defer aw.pendingWg.Done()
+	aw.kp.Input() <- msg
 
-	aw.workCh <- wrk
-
-	select {
-	case resp := <-resCh:
-		close(resCh)
-		if resp != nil {
-			err = resp
-			n = 0
-		}
+	if err = <-resCh; err != nil {
+		return
 	}
+
+	n = len(p)
 
 	return
 }
@@ -181,6 +159,6 @@ func (aw *AckingWriter) Close() error {
 	atomic.StoreInt32(&aw.closed, 1)
 	aw.pendingWg.Wait() // wait for pending writes to complete
 	close(aw.stopCh)    // signal response listener stop
-
+	aw.log.Println("Pending writes done")
 	return nil
 }

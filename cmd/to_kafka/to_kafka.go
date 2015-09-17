@@ -9,7 +9,6 @@ Supported command line options are
 
   Application Options:
     -b, --brokers=   Broker addresses (can be given multiple times) (localhost:9092)
-    -c, --clientid=  Client ID to use (to_kafka_client)
     -d, --delimiter= Delimiter byte to use when reading stdin. Remember to either use single quotes around the option or quote the
                      backslash (\\n instead of \n) if using escape sequences (\n)
     -v, --verbose    Print extra debugging cruft to stderr
@@ -47,7 +46,7 @@ import (
 	"syscall"
 
 	"github.com/ORBAT/krater"
-	"github.com/Shopify/sarama"
+	"gopkg.in/Shopify/sarama.v1"
 
 	f "github.com/jessevdk/go-flags"
 )
@@ -86,7 +85,6 @@ func (c *Char) UnmarshalFlag(value string) (err error) {
 
 var opts struct {
 	Brokers   []string `short:"b" long:"brokers" description:"Broker addresses (can be given multiple times)" default:"localhost:9092"`
-	ClientId  string   `short:"c" long:"clientid" description:"Client ID to use" default:"to_kafka_client"`
 	Delimiter Char     `short:"d" long:"delimiter" default:"\\n" description:"Delimiter byte to use when reading stdin. Remember to either use single quotes around the option or quote the backslash (\\\\n instead of \\n) if using escape sequences"`
 	Verbose   bool     `short:"v" long:"verbose" description:"Print extra debugging cruft to stderr"`
 	Args      struct {
@@ -110,21 +108,15 @@ func main() {
 	}
 
 	dels, _ := opts.Delimiter.MarshalFlag()
-	log.Printf("Delimiter: '%s' (%#x), brokers: %s\ntopic: %s\nclient ID: %s\n", dels, byte(opts.Delimiter), strings.Join(opts.Brokers, ", "), opts.Args.Topic,
-		opts.ClientId)
+	log.Printf("Delimiter: '%s' (%#x), brokers: %s\ntopic: %s\n", dels, byte(opts.Delimiter), strings.Join(opts.Brokers, ", "), opts.Args.Topic)
 
-	cl, err := sarama.NewClient(opts.ClientId, opts.Brokers, nil)
-	if err != nil {
-		fmt.Println("Error creating client:", err.Error())
-		os.Exit(2)
-	}
+	pc := sarama.NewConfig()
 
-	pc := sarama.NewProducerConfig()
+	pc.Producer.Return.Successes = true
+	pc.Producer.Return.Errors = true
+	pc.Producer.RequiredAcks = sarama.WaitForLocal
 
-	pc.AckSuccesses = true
-	pc.RequiredAcks = 1
-
-	kp, err := sarama.NewProducer(cl, pc)
+	kp, err := sarama.NewAsyncProducer(opts.Brokers, pc)
 
 	if err != nil {
 		fmt.Println("Error creating producer:", err.Error())

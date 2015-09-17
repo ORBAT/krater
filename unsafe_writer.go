@@ -9,59 +9,32 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/Shopify/sarama"
+	"gopkg.in/Shopify/sarama.v1"
 )
 
-// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring (or logging; see UnsafeWriter#SetLogger
-// and LogOutput) any error responses sent by the brokers.
+// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers.
 // Parallel calls to Write / ReadFrom are safe.
 //
-// It's recommended to initialize the sarama.Producer passed to UnsafeWriter with AckSuccesses = false.
+// The AsyncProducer passed to NewUnsafeWriter must have Config.Return.Successes == false and Config.Return.Errors == false
 //
 // Close() must be called when the writer is no longer needed.
 type UnsafeWriter struct {
-	kp        Producer
+	kp        sarama.AsyncProducer
 	id        string
 	topic     string
-	closed    int32         // nonzero if the writer has started closing. Must be accessed atomically
-	stopCh    chan struct{} // used to signal event loop close
+	closed    int32 // nonzero if the writer has started closing. Must be accessed atomically
 	log       StdLogger
 	pendingWg sync.WaitGroup // WaitGroup for pending messages
-	closeMut  sync.Mutex     // mutex for Close and CloseAll
+	closeMut  sync.Mutex
 }
 
 var unswIdGen = sequentialIntGen()
 
-func NewUnsafeWriter(topic string, kp Producer) *UnsafeWriter {
+func NewUnsafeWriter(topic string, kp sarama.AsyncProducer) *UnsafeWriter {
 	id := "aw-" + strconv.Itoa(unswIdGen())
 	log := newLogger(fmt.Sprintf("UnsafeWr %s -> %s", id, topic), nil)
-	stopCh := make(chan struct{})
-
-	uw := &UnsafeWriter{kp: kp, id: id, topic: topic, log: log, stopCh: stopCh}
-
-	evtLoop := func() {
-		log.Println("Starting error listener")
-		for {
-			select {
-			case <-stopCh:
-				log.Println("Closing error listener")
-				return
-			case perr, ok := <-kp.Errors():
-				if !ok {
-					log.Println("Errors() channel closed?!")
-					return
-				}
-				log.Println("Got error from Kafka:", perr)
-			case _, ok := <-kp.Successes():
-				if !ok {
-					log.Println("Successes() channel closed?!")
-					return
-				}
-			}
-		}
-	}
-
-	go withRecover(evtLoop)
+	log.Println("Created")
+	uw := &UnsafeWriter{kp: kp, id: id, topic: topic, log: log}
 
 	return uw
 }
@@ -69,7 +42,7 @@ func NewUnsafeWriter(topic string, kp Producer) *UnsafeWriter {
 // Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil.
 // Trying to Write to a closed writer will return syscall.EINVAL. Thread-safe.
 //
-// Write might block if the Input() channel of the underlying sarama.Producer is full.
+// Write might block if the Input() channel of the underlying sarama.AsyncProducer is full.
 func (uw *UnsafeWriter) Write(p []byte) (n int, err error) {
 	if uw.Closed() {
 		return 0, syscall.EINVAL
@@ -80,7 +53,7 @@ func (uw *UnsafeWriter) Write(p []byte) (n int, err error) {
 
 	n = len(p)
 
-	uw.kp.Input() <- &sarama.MessageToSend{Topic: uw.topic, Key: nil, Value: sarama.ByteEncoder(p)}
+	uw.kp.Input() <- &sarama.ProducerMessage{Topic: uw.topic, Key: nil, Value: sarama.ByteEncoder(p)}
 
 	return
 }
@@ -130,7 +103,6 @@ func (uw *UnsafeWriter) Close() (err error) {
 	atomic.StoreInt32(&uw.closed, 1)
 
 	uw.pendingWg.Wait()
-	close(uw.stopCh)
-
+	uw.log.Println("Pending writes done")
 	return nil
 }

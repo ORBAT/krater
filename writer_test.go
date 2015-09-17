@@ -13,37 +13,39 @@ import (
 
 	"github.com/bradfitz/iter"
 
-	"github.com/Shopify/sarama"
+	"gopkg.in/Shopify/sarama.v1"
 )
 
 func newFakeProd(insz int) *fakeProd {
-	return &fakeProd{in: make(chan *sarama.MessageToSend, insz), succs: make(chan *sarama.MessageToSend, 20), errs: make(chan *sarama.ProduceError, 20)}
+	return &fakeProd{in: make(chan *sarama.ProducerMessage, insz), succs: make(chan *sarama.ProducerMessage, 20), errs: make(chan *sarama.ProducerError, 20)}
 }
 
 type fakeProd struct {
-	in       chan *sarama.MessageToSend
-	succs    chan *sarama.MessageToSend
-	errs     chan *sarama.ProduceError
+	in       chan *sarama.ProducerMessage
+	succs    chan *sarama.ProducerMessage
+	errs     chan *sarama.ProducerError
 	msgCount int32
 }
 
-func (fp *fakeProd) Input() chan<- *sarama.MessageToSend {
+func (fp *fakeProd) Input() chan<- *sarama.ProducerMessage {
 	return fp.in
 }
 
-func (fp *fakeProd) Successes() <-chan *sarama.MessageToSend {
+func (fp *fakeProd) Successes() <-chan *sarama.ProducerMessage {
 	return fp.succs
 }
 
-func (fp *fakeProd) Errors() <-chan *sarama.ProduceError {
+func (fp *fakeProd) Errors() <-chan *sarama.ProducerError {
 	return fp.errs
 }
+
+func (fp *fakeProd) AsyncClose() {}
 
 func (fp *fakeProd) Close() error {
 	close(fp.in)
 	// close(fp.succs)
 	// close(fp.errs)
-	var es sarama.ProduceErrors
+	var es sarama.ProducerErrors
 	for e := range fp.errs {
 		es = append(es, e)
 	}
@@ -55,9 +57,9 @@ func (fp *fakeProd) Close() error {
 	return nil
 }
 
-type checker func(*sarama.MessageToSend) bool
+type checker func(*sarama.ProducerMessage) bool
 
-var nopChk = func(*sarama.MessageToSend) bool { return true }
+var nopChk = func(*sarama.ProducerMessage) bool { return true }
 
 func (fp *fakeProd) popToSucc(c checker, t testing.TB) {
 	msg := <-fp.in
@@ -65,6 +67,7 @@ func (fp *fakeProd) popToSucc(c checker, t testing.TB) {
 		t.Errorf("Invalid message %+v", msg)
 	}
 	fp.succs <- msg
+
 	atomic.AddInt32(&fp.msgCount, 1)
 }
 
@@ -73,7 +76,7 @@ func (fp *fakeProd) popToErr(e error, c checker, t testing.TB) {
 	if !c(msg) {
 		t.Errorf("Invalid message %+v", msg)
 	}
-	fp.errs <- &sarama.ProduceError{Err: e, Msg: msg}
+	fp.errs <- &sarama.ProducerError{Err: e, Msg: msg}
 	atomic.AddInt32(&fp.msgCount, 1)
 }
 
@@ -93,7 +96,7 @@ func (fp *fakeProd) allErr(e error, c checker, t testing.TB) {
 			t.Errorf("Invalid message %+v", msg)
 		}
 
-		fp.errs <- &sarama.ProduceError{Err: e, Msg: msg}
+		fp.errs <- &sarama.ProducerError{Err: e, Msg: msg}
 		atomic.AddInt32(&fp.msgCount, 1)
 	}
 }
@@ -102,7 +105,7 @@ func (fp *fakeProd) count() int32 {
 	return atomic.LoadInt32(&fp.msgCount)
 }
 
-var _ Producer = &fakeProd{}
+var _ sarama.AsyncProducer = &fakeProd{}
 
 func mustValue(e sarama.Encoder) []byte {
 	if bs, err := e.Encode(); err != nil {
@@ -126,7 +129,7 @@ var testTopic = "blarr"
 
 var testErr = errors.New("dohoi")
 
-func defChk(m *sarama.MessageToSend) bool {
+func defChk(m *sarama.ProducerMessage) bool {
 	return m.Key == nil && reflect.DeepEqual(mustValue(m.Value), testBytes) && m.Topic == testTopic
 }
 
@@ -330,16 +333,14 @@ func TestAckingGracefulClose(t *testing.T) {
 			doneWg.Done()
 		}()
 	}
-	startedWg.Wait()
 
-	closedCh := make(chan struct{})
+	startedWg.Wait()
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		if err := aw.Close(); err != nil {
 			t.Error(err)
 		}
-		close(closedCh)
 	}()
 	time.Sleep(80 * time.Millisecond)
 	go kp.allSucc(defChk, t)
