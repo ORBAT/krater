@@ -1,3 +1,5 @@
+// package kafkaconsumer is a clone of github.com/wvanbergen/kafka/kafkaconsumer with sarama references
+// replaced with gopkg.in links instead of "raw" Github
 package kafkaconsumer
 
 import (
