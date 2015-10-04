@@ -20,6 +20,7 @@ type GroupReader struct {
 	closeCh  chan chan error
 	writeMut sync.Mutex
 	log      StdLogger
+	id       string
 }
 
 func NewGroupReader(group string, topics []string, zookeeper string, cgConf *kafkaconsumer.Config) (gr *GroupReader, err error) {
@@ -33,7 +34,9 @@ func NewGroupReader(group string, topics []string, zookeeper string, cgConf *kaf
 		return
 	}
 
-	log := newLogger(fmt.Sprintf("%s (%s)", "grprd-"+strconv.Itoa(grIdGen()), group), nil)
+	id := fmt.Sprintf("%s (%s)", "grprd-"+strconv.Itoa(grIdGen()), group)
+
+	log := newLogger(id, nil)
 
 	log.Println("Created")
 
@@ -44,13 +47,19 @@ func NewGroupReader(group string, topics []string, zookeeper string, cgConf *kaf
 		cgConf:  cgConf,
 		log:     log,
 		closeCh: make(chan chan error, 1),
+		id:      id,
 	}, nil
+}
+
+func (gr GroupReader) String() string {
+	return gr.id
 }
 
 // WriteTo joins the consumer group and starts consuming from its topics.
 func (gr *GroupReader) WriteTo(w io.Writer) (n int64, err error) {
 	gr.writeMut.Lock()
 	defer gr.writeMut.Unlock()
+	gr.log.Println("Starting WriteTo")
 	cg, err := kafkaconsumer.Join(gr.group, gr.sub, gr.zkConn, gr.cgConf)
 	if err != nil {
 		gr.log.Printf("Couldn't join consumer group: %s", err)
@@ -83,13 +92,15 @@ msgLoop:
 			break msgLoop
 		}
 	}
-
+	gr.log.Printf("Finished WriteTo with n %d, err %+v", n, err)
 	return
 }
 
 func (gr *GroupReader) Close() (err error) {
+	gr.log.Println("Closing")
 	ch := make(chan error)
 	gr.closeCh <- ch
 	err = <-ch
+	gr.log.Printf("Closed, error was %+v", err)
 	return
 }
