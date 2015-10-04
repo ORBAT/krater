@@ -76,6 +76,7 @@ msgLoop:
 				err = werr
 				break msgLoop
 			}
+			cg.Ack(msg)
 			n += int64(nw)
 		case errCh := <-gr.closeCh:
 			errCh <- cg.Close()
