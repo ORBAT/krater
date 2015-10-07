@@ -12,6 +12,9 @@ import (
 	"gopkg.in/Shopify/sarama.v1"
 )
 
+// type KeyerFn represents any function that can turn a message into a key for that particular message
+type KeyerFn func(*sarama.ProducerMessage) sarama.Encoder
+
 // AckingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer, and
 // each Write() call will block until a response is received from the broker.
 //
@@ -29,6 +32,7 @@ type AckingWriter struct {
 	sema      chan empty     // used as a counting semaphore
 	closeCh   chan empty
 	closeMut  sync.Mutex
+	keyer     KeyerFn
 }
 
 var awIdGen = sequentialIntGen()
@@ -39,8 +43,8 @@ type empty struct{}
 //
 // kp MUST have been initialized with AckSuccesses = true or Write will block indefinitely.
 func NewAckingWriter(topic string, kp sarama.AsyncProducer, maxConcurrent int) *AckingWriter {
-	id := "aw-" + strconv.Itoa(awIdGen())
-	logger := newLogger(fmt.Sprintf("AckWr %s -> %s", id, topic), nil)
+	id := "ackwr-" + strconv.Itoa(awIdGen())
+	logger := newLogger(fmt.Sprintf("%s -> %s", id, topic), nil)
 
 	logger.Printf("Created")
 
@@ -55,7 +59,7 @@ func NewAckingWriter(topic string, kp sarama.AsyncProducer, maxConcurrent int) *
 
 	go withRecover(aw.handleErrors)
 	go withRecover(aw.handleSuccesses)
-
+	aw.keyer = func(_ *sarama.ProducerMessage) sarama.Encoder { return nil }
 	return aw
 }
 
@@ -83,10 +87,20 @@ func (aw *AckingWriter) handleErrors() {
 	}
 }
 
+// SetKeyer sets the keyer function used to specify keys for messages. Defaults to having nil keys
+// for all messages. SetKeyer is NOT thread safe, and it must not be used if any writes are underway.
+func (aw *AckingWriter) SetKeyer(fn KeyerFn) {
+	aw.keyer = fn
+}
+
 // TODO(orbat): Write timeouts?
 
 // Write will queue p as a single message, blocking until a response is received. n will always be len(p) if the
-// message was sent successfully, 0 otherwise. Trying to Write to a closed writer will return syscall.EINVAL. Thread-safe.
+// message was sent successfully, 0 otherwise. The message's key is determined by the keyer function set with SetKeyer,
+// and defaults to nil.
+// Trying to Write to a closed writer will return syscall.EINVAL.
+//
+// Thread-safe.
 //
 // Implements io.Writer.
 func (aw *AckingWriter) Write(p []byte) (n int, err error) {
@@ -98,7 +112,10 @@ func (aw *AckingWriter) Write(p []byte) (n int, err error) {
 	aw.sema <- empty{}
 	defer func() { <-aw.sema }()
 
-	msg := &sarama.ProducerMessage{Topic: aw.topic, Key: nil, Value: sarama.ByteEncoder(p)}
+	msg := &sarama.ProducerMessage{Topic: aw.topic, Value: sarama.ByteEncoder(p)}
+
+	msg.Key = aw.keyer(msg)
+
 	resCh := make(chan error, 1)
 	msg.Metadata = resCh
 

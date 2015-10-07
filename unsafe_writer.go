@@ -26,17 +26,24 @@ type UnsafeWriter struct {
 	log       StdLogger
 	pendingWg sync.WaitGroup // WaitGroup for pending messages
 	closeMut  sync.Mutex
+	keyer     KeyerFn
 }
 
 var unswIdGen = sequentialIntGen()
 
 func NewUnsafeWriter(topic string, kp sarama.AsyncProducer) *UnsafeWriter {
-	id := "aw-" + strconv.Itoa(unswIdGen())
-	log := newLogger(fmt.Sprintf("UnsafeWr %s -> %s", id, topic), nil)
+	id := "unswr-" + strconv.Itoa(unswIdGen())
+	log := newLogger(fmt.Sprintf("%s -> %s", id, topic), nil)
 	log.Println("Created")
 	uw := &UnsafeWriter{kp: kp, id: id, topic: topic, log: log}
-
+	uw.keyer = func(_ *sarama.ProducerMessage) sarama.Encoder { return nil }
 	return uw
+}
+
+// SetKeyer sets the keyer function used to specify keys for messages. Defaults to having nil keys
+// for all messages. SetKeyer is NOT thread safe, and it must not be used if any writes are underway.
+func (uw *UnsafeWriter) SetKeyer(fn KeyerFn) {
+	uw.keyer = fn
 }
 
 // Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil.
@@ -52,8 +59,9 @@ func (uw *UnsafeWriter) Write(p []byte) (n int, err error) {
 	defer uw.pendingWg.Done()
 
 	n = len(p)
-
-	uw.kp.Input() <- &sarama.ProducerMessage{Topic: uw.topic, Key: nil, Value: sarama.ByteEncoder(p)}
+	msg := &sarama.ProducerMessage{Topic: uw.topic, Key: nil, Value: sarama.ByteEncoder(p)}
+	msg.Key = uw.keyer(msg)
+	uw.kp.Input() <- msg
 
 	return
 }
