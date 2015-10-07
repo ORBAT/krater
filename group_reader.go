@@ -21,6 +21,7 @@ type GroupReader struct {
 	writeMut sync.Mutex
 	log      StdLogger
 	id       string
+	newCg    func() (kafkaconsumer.Consumer, error)
 }
 
 func NewGroupReader(group string, topics []string, zookeeper string, cgConf *kafkaconsumer.Config) (gr *GroupReader, err error) {
@@ -60,7 +61,15 @@ func (gr *GroupReader) WriteTo(w io.Writer) (n int64, err error) {
 	gr.writeMut.Lock()
 	defer gr.writeMut.Unlock()
 	gr.log.Println("Starting WriteTo")
-	cg, err := kafkaconsumer.Join(gr.group, gr.sub, gr.zkConn, gr.cgConf)
+
+	var cg kafkaconsumer.Consumer
+
+	if gr.newCg != nil { // newCg is only used in tests for now
+		cg, err = gr.newCg()
+	} else {
+		cg, err = kafkaconsumer.Join(gr.group, gr.sub, gr.zkConn, gr.cgConf)
+	}
+
 	if err != nil {
 		gr.log.Printf("Couldn't join consumer group: %s", err)
 		return
@@ -79,13 +88,21 @@ func (gr *GroupReader) WriteTo(w io.Writer) (n int64, err error) {
 msgLoop:
 	for {
 		select {
-		case msg := <-msgCh:
+		case msg, ok := <-msgCh:
+			if !ok {
+				gr.log.Println("Consumer message channel closed")
+				break msgLoop
+			}
+
+			gr.log.Printf("Got message %p", msg)
 			nw, werr := w.Write(msg.Value)
+			gr.log.Printf("Wrote %d bytes (%+v)", nw, werr)
 			if werr != nil {
 				err = werr
 				break msgLoop
 			}
 			cg.Ack(msg)
+			gr.log.Printf("Acked %p", msg)
 			n += int64(nw)
 		case errCh := <-gr.closeCh:
 			errCh <- cg.Close()
