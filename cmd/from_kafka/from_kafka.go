@@ -4,7 +4,9 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"time"
+	"os/user"
+
+	"gopkg.in/Shopify/sarama.v1"
 
 	"github.com/ORBAT/krater/kafkaconsumer"
 
@@ -14,7 +16,7 @@ import (
 )
 
 var opts struct {
-	Group     string   `short:"g" long:"group" description:"Consumer group name"`
+	Group     string   `short:"g" long:"group" description:"Consumer group name. Will default to username + _from_kafka"`
 	Zookeeper string   `short:"z" long:"zookeeper" description:"Zookeeper connection string like zk1:1234,zk2:666/some/chroot" default:"localhost:2181"`
 	Verbose   bool     `short:"v" long:"verbose" description:"Be verbose"`
 	Topics    []string `short:"t" long:"topics" description:"Topics to consume from"`
@@ -35,21 +37,29 @@ func main() {
 		log.SetOutput(ioutil.Discard)
 	}
 
-	cgConf := kafkaconsumer.NewConfig()
+	if len(opts.Group) == 0 {
+		var (
+			userName = "unknownuser"
+			hostName = "unknownhost"
+		)
 
+		if cu, err := user.Current(); err == nil {
+			userName = cu.Username
+		}
+
+		if hn, err := os.Hostname(); err == nil {
+			hostName = hn
+		}
+
+		opts.Group = hostName + "_" + userName + "_from_kafka"
+	}
+
+	cgConf := kafkaconsumer.NewConfig()
+	cgConf.Offsets.Initial = sarama.OffsetOldest
 	gr, err := krater.NewGroupReader(opts.Group, opts.Topics, opts.Zookeeper, cgConf)
 	if err != nil {
 		panic(err)
 	}
-
-	go func() {
-		time.Sleep(60 * time.Second)
-		log.Printf("Closing reader %s", gr)
-		err := gr.Close()
-		if err != nil {
-			panic(err)
-		}
-	}()
 
 	n, err := gr.WriteTo(os.Stdout)
 	log.Printf("%d %s", n, err)
